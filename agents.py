@@ -164,6 +164,8 @@ class Summarizer:
                     self.cache.set(cache_key, layer, text)
                 return text
             except anthropic.RateLimitError:
+                if self.verbose:
+                    print(f"  [{layer}] rate limited on {model}; retrying in 30s", flush=True)
                 await asyncio.sleep(30)
                 return await self._call(
                     prompt,
@@ -174,6 +176,8 @@ class Summarizer:
                     system_prompt=system_prompt,
                 )
             except anthropic.APIError as e:
+                if self.verbose:
+                    print(f"  [{layer}] API error on {model}: {e}", flush=True)
                 return f"[ERROR: {e}]"
 
     # -----------------------------------------------------------------------
@@ -577,7 +581,6 @@ class Summarizer:
             ),
         }]
 
-        text_chunks: list[str] = []
         max_tool_calls = 30
         tool_call_count = 0
 
@@ -597,15 +600,16 @@ class Summarizer:
                 response.usage.output_tokens,
             )
 
-            for block in response.content:
-                if getattr(block, "type", "") == "text":
+            if getattr(response, "stop_reason", None) != "tool_use":
+                final_chunks: list[str] = []
+                for block in response.content:
+                    if getattr(block, "type", "") != "text":
+                        continue
                     txt = getattr(block, "text", "").strip()
                     if txt:
-                        text_chunks.append(txt)
-
-            if getattr(response, "stop_reason", None) != "tool_use":
-                if text_chunks:
-                    return "\n\n".join(text_chunks).strip()
+                        final_chunks.append(txt)
+                if final_chunks:
+                    return "\n\n".join(final_chunks).strip()
                 break
 
             messages.append({"role": "assistant", "content": response.content})

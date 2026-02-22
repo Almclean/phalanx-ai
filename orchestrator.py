@@ -22,7 +22,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from parser import discover_files, discover_doc_files, parse_file, parse_doc_file, FileUnits, DocFile
+from parser import (
+    discover_files_with_exclusions,
+    discover_doc_files,
+    parse_file,
+    parse_doc_file,
+    FileUnits,
+    DocFile,
+)
 from agents import Summarizer
 from checkpoint import CheckpointState, CheckpointStore, now_iso_utc
 
@@ -123,6 +130,7 @@ class RepoOrchestrator:
         l4_cluster_size: int = 8,
         l1_batch_size: int = 8,
         l1_batch_threshold: int = 500,
+        progress_heartbeat_secs: float = 20.0,
         dry_run: bool = False,
         checkpoint_dir: Optional[Path] = None,
         resume: bool = True,
@@ -134,6 +142,7 @@ class RepoOrchestrator:
         self.deep_mode_threshold = deep_mode_threshold
         self.l3_chunk_size = max(1, l3_chunk_size)
         self.l4_cluster_size = max(1, l4_cluster_size)
+        self.progress_heartbeat_secs = max(0.5, float(progress_heartbeat_secs))
         self.dry_run = dry_run
         self.resume = resume
 
@@ -199,6 +208,7 @@ class RepoOrchestrator:
         root: Path,
         all_files: list[Path],
         file_units_list: list[FileUnits],
+        excluded_dirs: list[str],
     ) -> tuple[str, dict]:
         languages = sorted(set(fu.language for fu in file_units_list))
         total_units = sum(len(fu.units) for fu in file_units_list)
@@ -259,6 +269,7 @@ class RepoOrchestrator:
             f"- Repository: `{root.name}`\n"
             f"- Files analyzed: {len(file_units_list)}\n"
             f"- Code units: {total_units}\n"
+            f"- Excluded directories: {len(excluded_dirs)}\n"
             f"- Languages: {', '.join(languages)}\n"
             f"- Estimated calls: L1={l1_calls}, L2={l2_calls}, Docs={doc_files}, L3={l3_calls}, L4={l4_calls}, L5={l5_calls}\n"
             f"- Estimated tokens: in~{est_in:,}, out~{est_out:,}\n"
@@ -271,6 +282,7 @@ class RepoOrchestrator:
             "modules": module_count,
             "languages": languages,
             "total_units": total_units,
+            "excluded_directories": excluded_dirs,
             "doc_files_summarized": doc_files,
             "estimated_calls": {
                 "l1": l1_calls,
@@ -291,10 +303,16 @@ class RepoOrchestrator:
     # Phase 1+2: Discovery and parsing
     # -----------------------------------------------------------------------
 
-    def _discover_and_parse(self, root: Path) -> tuple[list[FileUnits], list[Path]]:
+    def _discover_and_parse(self, root: Path) -> tuple[list[FileUnits], list[Path], list[str]]:
         self._log(f"\n[Phase 1] Discovering source files in {root}...")
-        files = discover_files(root, self.exclude_dirs)
+        files, excluded_dirs = discover_files_with_exclusions(root, self.exclude_dirs)
         self._log(f"  Found {len(files)} source files")
+        self._log(f"  Excluded directories matched: {len(excluded_dirs)}")
+        if excluded_dirs:
+            preview = ", ".join(excluded_dirs[:10])
+            if len(excluded_dirs) > 10:
+                preview += f", ... (+{len(excluded_dirs) - 10} more)"
+            self._log(f"  Excluded paths: {preview}")
 
         if len(files) > self.max_files:
             raise ValueError(
@@ -316,7 +334,7 @@ class RepoOrchestrator:
                 print(f"  Parsed {i+1}/{len(files)}...", flush=True)
 
         self._log(f"  Parsed {len(file_units_list)} files ({errors} with errors)")
-        return file_units_list, files
+        return file_units_list, files, excluded_dirs
 
     # -----------------------------------------------------------------------
     # Phase 3: File-level summarization (L1+L2 in parallel)
@@ -337,10 +355,49 @@ class RepoOrchestrator:
             return existing_map
 
         start = asyncio.get_event_loop().time()
+        total = len(pending)
+        completed = 0
+        log_every = max(1, total // 20)
+        task_to_path: dict[asyncio.Task[str], str] = {}
+        for fu in pending:
+            task = asyncio.create_task(self.summarizer.summarize_file(fu))
+            task_to_path[task] = fu.path
 
-        tasks = {fu.path: self.summarizer.summarize_file(fu) for fu in pending}
-        results = await asyncio.gather(*tasks.values())
-        existing_map.update(dict(zip(tasks.keys(), results)))
+        while task_to_path:
+            done, _ = await asyncio.wait(
+                task_to_path.keys(),
+                timeout=self.progress_heartbeat_secs,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                elapsed = asyncio.get_event_loop().time() - start
+                pct = (completed / total) * 100 if total else 100.0
+                self._log(
+                    f"  Phase 3 heartbeat: {completed}/{total} files complete "
+                    f"({pct:.1f}%), elapsed {elapsed:.1f}s"
+                )
+                continue
+
+            for task in done:
+                path = task_to_path.pop(task)
+                try:
+                    summary = task.result()
+                except Exception as e:
+                    for pending_task in task_to_path:
+                        pending_task.cancel()
+                    await asyncio.gather(*task_to_path.keys(), return_exceptions=True)
+                    raise RuntimeError(f"Phase 3 failed while summarizing `{path}`: {e}") from e
+
+                existing_map[path] = summary
+                completed += 1
+
+            if completed == total or (completed % log_every) == 0:
+                elapsed = asyncio.get_event_loop().time() - start
+                pct = (completed / total) * 100 if total else 100.0
+                self._log(
+                    f"  Phase 3 progress: {completed}/{total} files complete "
+                    f"({pct:.1f}%), elapsed {elapsed:.1f}s"
+                )
 
         elapsed = asyncio.get_event_loop().time() - start
         self._log(f"  Done in {elapsed:.1f}s")
@@ -686,7 +743,7 @@ class RepoOrchestrator:
             raise ValueError(f"Path does not exist: {root}")
 
         # Phase 1+2: Discover and parse
-        file_units_list, all_files = self._discover_and_parse(root)
+        file_units_list, all_files, excluded_dirs = self._discover_and_parse(root)
 
         if not file_units_list:
             raise ValueError("No parseable source files found in the repository.")
@@ -703,6 +760,7 @@ class RepoOrchestrator:
                 root=root,
                 all_files=all_files,
                 file_units_list=file_units_list,
+                excluded_dirs=excluded_dirs,
             )
             return SummaryResult(
                 repo_name=root.name,
@@ -803,6 +861,7 @@ class RepoOrchestrator:
             "modules": len(module_summaries),
             "languages": sorted(set(fu.language for fu in file_units_list)),
             "total_units": sum(len(fu.units) for fu in file_units_list),
+            "excluded_directories": excluded_dirs,
             "doc_files_summarized": len(doc_summaries),
             **vars(self.summarizer.tracker),
         }

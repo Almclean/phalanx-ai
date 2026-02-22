@@ -117,3 +117,23 @@ def test_dry_run_skips_all_summarizer_calls(tmp_path: Path):
     assert dummy.doc_calls == 0
     assert dummy.dir_calls == 0
     assert dummy.final_calls == 0
+
+
+def test_dry_run_reports_excluded_directories(tmp_path: Path):
+    repo = tmp_path / "repo_excluded"
+    _write(repo / "app.py", "def app():\n    return 1\n")
+    _write(repo / "vendor" / "lib.c", "int lib(void) { return 1; }\n")
+
+    orch = RepoOrchestrator(
+        api_key="test",
+        cache_dir=tmp_path / "cache3",
+        checkpoint_dir=tmp_path / "checkpoints3",
+        verbose=False,
+        dry_run=True,
+    )
+    dummy = _DummySummarizer()
+    orch.summarizer = dummy
+    result = asyncio.run(orch.run(repo))
+
+    assert "vendor" in result.stats["excluded_directories"]
+    assert "Excluded directories: 1" in result.final_summary

@@ -53,6 +53,7 @@ from parser import parse_file
 
 
 def build_markdown_report(result) -> str:
+    excluded_dirs = result.stats.get("excluded_directories", [])
     lines = [
         f"# Repository Summary: `{result.repo_name}`",
         "",
@@ -98,6 +99,7 @@ def build_markdown_report(result) -> str:
         "---", "", "## Analysis Stats", "",
         f"- Files analyzed: {result.stats['files_analyzed']}",
         f"- Code units parsed: {result.stats['total_units']}",
+        f"- Excluded directories: {len(excluded_dirs)}",
         f"- Doc files summarized: {result.stats.get('doc_files_summarized', 0)}",
         f"- Directories summarized: {result.stats['directories']}",
         f"- Modules summarized: {result.stats['modules']}",
@@ -107,6 +109,14 @@ def build_markdown_report(result) -> str:
         f"- Input tokens: {result.stats['input_tokens']:,}",
         f"- Output tokens: {result.stats['output_tokens']:,}",
     ]
+
+    if excluded_dirs:
+        lines += ["", "### Excluded Directory Paths", ""]
+        max_listed = 100
+        for path in excluded_dirs[:max_listed]:
+            lines.append(f"- `{path}`")
+        if len(excluded_dirs) > max_listed:
+            lines.append(f"- ... (+{len(excluded_dirs) - max_listed} more)")
 
     return "\n".join(lines)
 
@@ -174,6 +184,8 @@ async def main():
                         help="Units per L1 batch request (default: 8)")
     parser.add_argument("--l1-batch-threshold", type=int, default=500,
                         help="Max source chars for L1 batch eligibility (default: 500)")
+    parser.add_argument("--progress-heartbeat-secs", type=float, default=20.0,
+                        help="Emit long-running phase heartbeat logs every N seconds in --verbose mode (default: 20)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Estimate cost and exit without making API calls")
     parser.add_argument("--cache-dir", type=Path, default=None,
@@ -192,7 +204,7 @@ async def main():
                         help="Print progress for each agent")
     parser.add_argument("--exclude-dir", action="append", dest="exclude_dirs",
                         default=[], metavar="DIR",
-                        help="Additional directory names to exclude (repeatable)")
+                        help="Additional directory names or relative paths to exclude (repeatable)")
     parser.add_argument("--summary-only", action="store_true",
                         help="Print only the final ~1200 word summary")
     parser.add_argument("--diff", dest="diff", action="store_true", default=True,
@@ -281,6 +293,7 @@ async def main():
         l4_cluster_size=args.l4_cluster_size,
         l1_batch_size=args.l1_batch_size,
         l1_batch_threshold=args.l1_batch_threshold,
+        progress_heartbeat_secs=args.progress_heartbeat_secs,
         dry_run=args.dry_run,
         checkpoint_dir=args.checkpoint_dir,
         resume=args.resume,

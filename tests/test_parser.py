@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from parser import discover_doc_files, discover_files, parse_file
+from parser import discover_doc_files, discover_files, discover_files_with_exclusions, parse_file
 
 
 def test_parse_c_file_extracts_key_units(tmp_path: Path):
@@ -108,3 +108,32 @@ def test_header_files_are_code_not_doc_files(tmp_path: Path):
     assert "types.h" in code_paths
     assert "types.hpp" in code_paths
     assert "main.c" in code_paths
+
+
+def test_discover_files_reports_excluded_directory_paths(tmp_path: Path):
+    (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src" / "main.c").write_text("int main() { return 0; }")
+
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "node_modules" / "pkg" / "ignored.c").write_text("int x() { return 1; }")
+
+    (tmp_path / "vendor" / "lib").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "vendor" / "lib" / "ignored2.c").write_text("int y() { return 2; }")
+
+    files, excluded = discover_files_with_exclusions(tmp_path)
+
+    assert {p.name for p in files} == {"main.c"}
+    assert "node_modules" in excluded
+    assert "vendor" in excluded
+
+
+def test_discover_files_supports_relative_path_excludes(tmp_path: Path):
+    (tmp_path / "src" / "external").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src" / "external" / "skip.c").write_text("int skip(void) { return 0; }")
+    (tmp_path / "src" / "keep").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src" / "keep" / "keep.c").write_text("int keep(void) { return 1; }")
+
+    files, excluded = discover_files_with_exclusions(tmp_path, {"src/external"})
+
+    assert {p.name for p in files} == {"keep.c"}
+    assert "src/external" in excluded

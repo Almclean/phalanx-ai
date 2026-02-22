@@ -75,6 +75,53 @@ def test_l5_tool_use_loop_returns_final_text(tmp_path: Path):
     assert any(m.get("role") == "user" and isinstance(m.get("content"), list) for m in fake_client.messages.calls[1]["messages"])
 
 
+def test_l5_tool_use_ignores_intermediate_planning_text(tmp_path: Path):
+    responses = [
+        _FakeResponse(
+            "tool_use",
+            [
+                _text_block("I'll start by listing modules."),
+                _tool_use_block("t1", "list_modules", {}),
+            ],
+            _usage(),
+        ),
+        _FakeResponse(
+            "tool_use",
+            [
+                _text_block("Now let me fetch key files."),
+                _tool_use_block("t2", "get_file_summary", {"file_path": "src/main.py"}),
+            ],
+            _usage(),
+        ),
+        _FakeResponse("end_turn", [_text_block("Final synthesized summary only.")], _usage()),
+    ]
+    fake_client = _FakeClient(responses)
+    summarizer = Summarizer(
+        api_key="test",
+        client=fake_client,
+        cache_dir=tmp_path / "cache",
+        verbose=False,
+    )
+
+    result = asyncio.run(
+        summarizer.synthesize_final(
+            repo_name="repo",
+            repo_structure="repo/\n  src/",
+            module_summaries=[{"name": "src", "summary": "Source module summary"}],
+            languages=["python"],
+            file_count=2,
+            readme_excerpt=None,
+            manifest_excerpt=None,
+            doc_summaries=None,
+            file_summaries={"src/main.py": "Main file summary"},
+        )
+    )
+
+    assert result == "Final synthesized summary only."
+    assert "listing modules" not in result
+    assert "fetch key files" not in result
+
+
 def test_l5_tool_executor_file_lookup_partial_match(tmp_path: Path):
     summarizer = Summarizer(api_key="test", cache_dir=tmp_path / "cache")
     payload = summarizer._l5_execute_tool(

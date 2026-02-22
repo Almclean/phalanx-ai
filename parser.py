@@ -12,6 +12,7 @@ Text/doc file discovery is handled by discover_doc_files().
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Optional
 import re
@@ -476,29 +477,73 @@ _DEFAULT_EXCLUDE_DIRS: frozenset[str] = frozenset({
 })
 
 
-def discover_files(root: Path, extra_excludes: set[str] | None = None) -> list[Path]:
-    excludes = _DEFAULT_EXCLUDE_DIRS | (extra_excludes or set())
+def _discover_paths(
+    root: Path,
+    *,
+    include_extensions: set[str],
+    skip_names: set[str] | None = None,
+    extra_excludes: set[str] | None = None,
+) -> tuple[list[Path], list[str]]:
+    raw_extra = set(extra_excludes or set())
+    name_excludes = set(_DEFAULT_EXCLUDE_DIRS)
+    path_excludes: set[str] = set()
+    for item in raw_extra:
+        normalized = item.strip().replace("\\", "/").strip("/")
+        if normalized.startswith("./"):
+            normalized = normalized[2:]
+        if not normalized:
+            continue
+        if "/" in normalized:
+            path_excludes.add(normalized)
+        else:
+            name_excludes.add(normalized)
     files: list[Path] = []
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        if any(part in excludes for part in p.parts):
-            continue
-        if p.suffix.lower() in _EXT_MAP:
-            files.append(p)
-    return sorted(files)
+    excluded_dirs: set[str] = set()
+
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dir_path = Path(dirpath)
+
+        kept_dirs: list[str] = []
+        for d in dirnames:
+            rel = (dir_path / d).relative_to(root)
+            rel_str = rel.as_posix()
+            if d in name_excludes or rel_str in path_excludes:
+                excluded_dirs.add(str(rel))
+            else:
+                kept_dirs.append(d)
+        dirnames[:] = kept_dirs
+
+        for filename in filenames:
+            if skip_names and filename in skip_names:
+                continue
+            p = dir_path / filename
+            if p.suffix.lower() in include_extensions:
+                files.append(p)
+
+    return sorted(files), sorted(excluded_dirs)
+
+
+def discover_files_with_exclusions(
+    root: Path,
+    extra_excludes: set[str] | None = None,
+) -> tuple[list[Path], list[str]]:
+    return _discover_paths(
+        root,
+        include_extensions=set(_EXT_MAP.keys()),
+        extra_excludes=extra_excludes,
+    )
+
+
+def discover_files(root: Path, extra_excludes: set[str] | None = None) -> list[Path]:
+    files, _ = discover_files_with_exclusions(root, extra_excludes)
+    return files
 
 
 def discover_doc_files(root: Path, extra_excludes: set[str] | None = None) -> list[Path]:
-    excludes = _DEFAULT_EXCLUDE_DIRS | (extra_excludes or set())
-    files: list[Path] = []
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        if any(part in excludes for part in p.parts):
-            continue
-        if p.name in _DOC_SKIP_PATTERNS:
-            continue
-        if p.suffix.lower() in _DOC_EXTENSIONS:
-            files.append(p)
-    return sorted(files)
+    files, _ = _discover_paths(
+        root,
+        include_extensions=_DOC_EXTENSIONS,
+        skip_names=_DOC_SKIP_PATTERNS,
+        extra_excludes=extra_excludes,
+    )
+    return files

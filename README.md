@@ -51,6 +51,49 @@ Key design points:
 - Content-addressed summary cache
 - Checkpointed phases for resumable long runs
 
+## Cost Planning (Read First)
+
+Before running on a large repo, estimate first:
+
+```bash
+uv run phalanx /path/to/repo --dry-run --summary-only
+```
+
+How to reason about cost:
+
+- Dry run gives estimated token volume and estimated cost before any API calls.
+- Final run prints actual token totals (`Tokens in`, `Tokens out`) and estimated blended spend.
+- Exclude bundled/vendor trees to control cost: `--exclude-dir vendor --exclude-dir third_party --exclude-dir src/external`
+- Use incremental mode after first run: `--diff-only` summarizes only changed files.
+
+Worked example (raylib run):
+
+| Metric | Value |
+|---|---:|
+| Files analyzed | 357 |
+| API calls | 14,238 |
+| Cache hits | 3,965 |
+| Tokens in | 6,236,536 |
+| Tokens out | 1,480,547 |
+| Estimated blended spend | ~$19.91 |
+
+Same token volume against common list-price tiers (illustrative, as of 2026-02-22):
+
+| Provider/model tier | Approx cost |
+|---|---:|
+| Anthropic Haiku-class | ~$13.64 |
+| Anthropic Sonnet-class | ~$40.92 |
+| Anthropic Opus-class | ~$68.20 |
+| OpenAI mini-class | ~$4.52 |
+| OpenAI flagship-class | ~$31.64 |
+| Google Gemini Flash-class | ~$7.56 |
+| Google Gemini Pro-class | ~$30.24 to ~$51.60 |
+
+Notes:
+
+- These comparisons are list-price estimates from token totals, not invoice totals.
+- Model pricing changes over time; always re-check provider pricing pages before budget sign-off.
+
 ## Installation
 
 ### Prerequisites
@@ -193,7 +236,7 @@ uv run phalanx /path/to/repo --no-resume
 ### Scope and limits
 
 - `--max-files N`: source file guard (default `10000`)
-- `--exclude-dir DIR`: repeatable exclude list
+- `--exclude-dir DIR`: repeatable exclude list (directory name or relative path; excluded paths are listed in run stats/report)
 - `--skip-docs`: skip doc/config file summarization
 
 ### Performance and scale
@@ -206,6 +249,7 @@ uv run phalanx /path/to/repo --no-resume
 - `--l4-cluster-size N`: max modules per L4 cluster
 - `--l1-batch-size N`: L1 small-unit batch size
 - `--l1-batch-threshold N`: max source chars for L1 batch eligibility
+- `--progress-heartbeat-secs N`: heartbeat interval for long-running phase logs in `--verbose` mode
 
 ### Checkpointing
 
