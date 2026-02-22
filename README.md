@@ -6,6 +6,7 @@
 
 Phalanx is a recursive, hierarchical codebase summarizer for local and remote repositories.
 It uses AST parsing plus multi-layer LLM synthesis to produce architecture-level summaries that stay useful on large repos.
+Latest self-analysis report: [`phalanx_self_report.md`](phalanx_self_report.md).
 
 ## What It Does
 
