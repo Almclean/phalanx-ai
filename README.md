@@ -1,5 +1,9 @@
 # Phalanx
 
+<p align="center">
+  <img src="phalanx.png" alt="Phalanx screenshot" />
+</p>
+
 Phalanx is a recursive, hierarchical codebase summarizer for local and remote repositories.
 It uses AST parsing plus multi-layer LLM synthesis to produce architecture-level summaries that stay useful on large repos.
 
