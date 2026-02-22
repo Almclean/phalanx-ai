@@ -1,86 +1,58 @@
 # Repository Summary: `phalanx`
 
-*Analyzed 20 files across 2 modules | Languages: python | 233 code units parsed*
+*Analyzed 20 files across 2 modules | Languages: python | 234 code units parsed*
 
 ---
 
-Here is the complete technical summary:
+## Executive Summary
+
+Phalanx is a recursive, hierarchical codebase summarizer written in Python that converts raw source repositories into structured, multi-granularity documentation using a layered LLM synthesis pipeline. It ingests code from local directories or GitHub URLs, parses it with tree-sitter into structured code units, and progressively distills those units through five abstraction levels—from individual functions up to a final repository-wide narrative—using Anthropic's Claude models. The system is architected for production-grade reliability, with built-in checkpointing, content-addressed caching, incremental (diff-only) re-indexing, and cost estimation, making it practical for large real-world codebases.
+
+## System Architecture
+
+Phalanx's architecture is a strict bottom-up pipeline organized in five layers (L1–L5):
+
+- **L1 – Unit summaries**: Individual functions, classes, and code blocks extracted by `parser.py` are batch-summarized in parallel using Claude Haiku for throughput and cost efficiency.
+- **L2 – File summaries**: Unit summaries are aggregated into per-file digests, also via Haiku.
+- **L3 – Directory summaries**: File summaries are chunked and composed into directory-level overviews using Claude Sonnet for higher reasoning quality.
+- **L4 – Module summaries**: Directory summaries are clustered and synthesized into module-level documentation, again with Sonnet.
+- **L5 – Final synthesis**: An agentic loop allows the model to dynamically query module and file metadata via tool use before generating the final cross-cutting repository report.
+
+A two-tier caching system keyed on source content prevents redundant API calls across runs. Concurrency is governed by per-model semaphores, and exponential backoff handles API rate limiting. This layered design cleanly separates concerns: parsing, summarization, orchestration, and persistence are each isolated into their own modules.
+
+## Key Components
+
+**`parser.py`** is the ingestion layer. Using tree-sitter grammars for seven languages (Python, TypeScript/JavaScript, Rust, Go, C, C++), it traverses syntax trees to extract `CodeUnit` and `FileUnits` data structures annotated with docstrings, comments, and normalized metadata. Discovery functions traverse directory trees while respecting exclusion patterns.
+
+**`agents.py`** is the summarization engine. The `Summarizer` class manages the full L1–L5 abstraction chain, delegating to layer-specific prompt templates in `prompts.py`. A `CostTracker` dataclass accumulates token usage and estimated spend across both Haiku and Sonnet variants, providing cost transparency throughout a run.
+
+**`orchestrator.py`** is the coordination hub. `RepoOrchestrator` drives file discovery, feeds batches to `Summarizer`, aggregates results up through directory and module levels, and triggers final synthesis. It supports deep mode for exceptionally large repositories, dry-run mode for pre-run cost estimation, and checkpoint-driven resumability so any phase can restart without reprocessing completed work.
+
+**`manifest.py`** provides change tracking and audit persistence. `ManifestStore` saves and loads `RunManifest` objects that record per-file content hashes, run timing, and cost metadata. `compute_repo_changes` diffs successive manifests to classify files as added, modified, deleted, or unchanged, enabling incremental re-indexing that skips unmodified files entirely.
+
+**`repo_summarizer.py`** is the public CLI entry point. It parses arguments, handles GitHub credential resolution, and coordinates `RepoOrchestrator` for both full and diff-only analysis modes. It also assembles the final Markdown and JSON output reports, normalizing LLM-generated headings to ensure consistent formatting.
+
+**`diff_report.py`** bridges manifest diffs to human-readable output, serializing `ManifestDiff` objects to JSON and optionally generating natural-language change digests via an LLM call.
+
+## Operational Model
+
+A typical full run proceeds as: `repo_summarizer.py` → `RepoOrchestrator` discovers files → `parser.py` extracts code units → `agents.py` summarizes units in parallel batches → results are aggregated up through directories and modules → `Summarizer.synthesize_final()` runs an agentic tool-use loop for the repository overview → Markdown and JSON reports are emitted and a `RunManifest` is persisted. On subsequent runs, `ManifestStore` detects only changed files, and diff-only mode routes just those files through the pipeline, merging new summaries with cached prior context. Checkpoints allow interrupted runs to resume from the last completed phase rather than restarting from scratch.
+
+## Risks & Limitations
+
+The system carries several inherent risks. **LLM non-determinism** means summaries can vary between runs even for identical inputs, complicating diff reliability. **Cost unpredictability** is a concern for very large repositories; while dry-run mode and `CostTracker` mitigate this, multi-layer Sonnet calls on huge codebases can be expensive. **Language coverage** is fixed to seven languages via static tree-sitter grammars; unsupported languages are silently skipped. **Context window pressure** at L3–L5 is managed by chunking, but unusually large directories or modules could still exceed model context limits. Finally, **GitHub rate limits and API availability** represent external failure modes for remote ingestion that the retry logic only partially absorbs.
+
+## Testing Coverage Snapshot
+
+The `tests/` directory provides comprehensive mock-based coverage across all major subsystems. Dedicated test files target: source parsing and file discovery (`test_parser.py`), manifest persistence and diffing (`test_manifest.py`, `test_diff_report.py`), checkpoint recovery (`test_checkpoint.py`, `test_orchestrator_checkpoint.py`), LLM batching optimization (`test_agents_batching.py`), agentic tool-use loops (`test_agents_tool_use.py`), deep mode behavior (`test_orchestrator_deep_mode.py`), progress reporting (`test_orchestrator_progress.py`), and diff-only summarization (`test_repo_summarizer_diff_only.py`). All tests use lightweight fakes and mock doubles to remain independent of live LLM APIs and filesystems, ensuring deterministic, fast execution. The breadth of coverage is strong; the primary gap is the absence of end-to-end integration tests exercising real API calls or full repository ingestion.
 
 ---
 
-# Phalanx: Technical Architecture Summary
-
-## Overview
-
-Phalanx is a recursive, hierarchical codebase summarizer that transforms raw source repositories into structured, multi-granularity documentation using a layered LLM pipeline. Written entirely in Python, it ingests local directories or remote GitHub repositories, parses source files across seven languages via `tree-sitter`, and progressively synthesizes code understanding through five ascending abstraction levels — from individual functions and classes all the way to a holistic repository overview. The system is designed for large, real-world codebases: it is async-native, parallelizes aggressively, caches aggressively, and is fully resumable via checkpoint-driven fault tolerance. Its primary output is a Markdown report accompanied by JSON artifacts, with optional diff reports between successive runs.
-
----
-
-## Architecture
-
-Phalanx is organized as a five-stage summarization pipeline, each stage feeding its outputs upward as inputs to the next:
-
-- **L1 – Unit Summaries:** Individual functions, classes, and other code units are summarized by Claude Haiku in parallel batches.
-- **L2 – File Summaries:** Per-file summaries are synthesized from their constituent unit summaries, also using Haiku.
-- **L3 – Directory Summaries:** File summaries are aggregated bottom-up into directory-level narratives using Claude Sonnet, chunked to manage context limits.
-- **L4 – Module Summaries:** Directories are clustered and synthesized into module-level overviews, with smart grouping applied to large repositories ("deep mode").
-- **L5 – Final Synthesis:** An agentic LLM loop dynamically retrieves module and file summaries via tool invocation before producing a final ~1,200-word repository report.
-
-The architecture cleanly separates **parsing** (tree-sitter ASTs → `CodeUnit` data models), **prompting** (prompt construction per level), **execution** (concurrent Claude API calls with caching), **orchestration** (phase sequencing and checkpointing), and **persistence** (manifests, diffs, checkpoints, and disk cache).
-
----
-
-## Core Components
-
-**`parser.py`** — The ingestion and discovery layer. Defines the foundational data models (`CodeUnit`, `FileUnits`, `DocFile`) and provides tree-sitter-based parsers for seven languages. Extracts functions, classes, docstrings, and preceding documentation comments into normalized, language-agnostic representations. Discovery utilities (`discover_files`, `discover_doc_files`) traverse directory trees while respecting configurable exclusion patterns.
-
-**`agents.py`** — The LLM execution engine. The `Summarizer` class orchestrates concurrent API calls to Claude Haiku (fast, cheap, L1/L2) and Claude Sonnet (powerful, L3–L5) via per-model semaphores for concurrency control. Implements a two-tier cache (in-memory + disk) for individual units and composite summaries. Adaptive batching groups small code units into single prompts to reduce API round-trips. The `CostTracker` dataclass accumulates token usage and estimates blended costs across models. The `synthesize_final()` method implements a true agentic loop where Claude calls back into the system via tool use to fetch module/file summaries on demand.
-
-**`orchestrator.py`** — The pipeline coordinator. The `RepoOrchestrator` class sequences the five summarization phases, dispatching to `Summarizer` for API work and aggregating results bottom-up. Implements `_discover_and_parse()`, `_summarize_files()`, `_summarize_directories()`, `_summarize_modules_clustered()`, and `_final_synthesis()`. Supports dry-run mode for cost estimation, verbose heartbeat logging, and checkpoint-driven resumability so any phase can be restarted without replaying prior work.
-
-**`repo_summarizer.py`** — The CLI entry point and user-facing coordinator. Parses arguments, resolves local vs. GitHub sources, manages credential validation, and drives the orchestrator. Post-run formatting functions (`build_markdown_report()`, `build_diff_only_summary()`, `summarize_changed_files()`) transform structured `SummaryResult` objects into human-readable Markdown and JSON. Bridges synchronous CLI invocation to the async runtime via `run_cli()`.
-
-**`checkpoint.py`** — Fault-tolerant state persistence. `CheckpointState` tracks completed phases and accumulated summaries for a run. `CheckpointStore` serializes checkpoint state to disk with atomic file-swap writes to prevent corruption and provides `find_latest()` for transparent resume. Phase transitions are validated to prevent invalid state progressions.
-
-**`manifest.py`** — Cross-run change tracking. Defines `RunManifest`, `FileRecord`, `ManifestDiff`, and `RepoChangeSet` dataclasses. `ManifestStore` saves, loads, and diffs manifests between runs, computing per-file content hashes to categorize files as added, modified, deleted, or unchanged. Enables incremental re-indexing by identifying exactly which files changed and supports `compute_churn_hotspots()` for temporal analysis. A `prune()` method enforces manifest retention policies.
-
-**`cache.py`** — A lightweight two-level summary cache. `SummaryCache` pairs a fast in-memory dictionary with JSON file persistence, keyed by SHA-256 hashes of (layer name + content). Survives process restarts and provides basic utilization statistics.
-
-**`diff_report.py`** — Diff serialization and narration. Converts `ManifestDiff` objects to JSON-serializable dictionaries with aggregated statistics, writes them to disk, and optionally generates AI-powered natural language diff digests via an injected `Summarizer` instance.
-
-**`github.py`** — Remote repository acquisition. Handles cloning or fetching GitHub-hosted repositories for local pipeline processing.
-
-**`prompts.py`** — Prompt construction. Assembles LLM-ready prompts appropriate for each summarization level (L1–L5), keeping prompt engineering concerns cleanly separated from execution logic.
-
----
-
-## Data Flow & Key Interactions
-
-1. `repo_summarizer.py` receives CLI arguments and constructs a `RepoOrchestrator`, injecting a configured `Summarizer` and `SummaryCache`.
-2. `RepoOrchestrator` calls `parser.discover_files()` to enumerate eligible source files, then `parser.parse_file()` on each to produce `CodeUnit` lists.
-3. `Summarizer.summarize_unit()` (or batched `_summarize_small_batch()`) sends L1 prompts to Claude Haiku concurrently, results are cached by SHA-256 hash.
-4. File-level summaries (L2) are composed from unit summaries and fed into directory aggregation (L3, Sonnet), then module clustering (L4, Sonnet).
-5. `synthesize_final()` initiates an agentic Claude Sonnet loop: Claude calls registered tools to fetch specific module/file summaries, iterates, then produces the final report.
-6. `CheckpointStore` is written after each phase; on resume, completed phases are skipped by loading the existing `CheckpointState`.
-7. `ManifestStore` computes a diff between the previous and current run, which `diff_report.py` serializes and optionally narrates.
-
----
-
-## Technical Patterns & Design Decisions
-
-- **Layered LLM model strategy:** Haiku handles high-volume, low-complexity tasks (L1/L2); Sonnet handles reasoning-intensive synthesis (L3–L5). This two-tier approach balances cost against quality.
-- **Agentic tool use at L5:** Rather than stuffing all module summaries into a single massive prompt, Claude is given retrieval tools and autonomously decides what context to pull. This avoids context-window overflow and produces more focused final reports.
-- **Adaptive batching:** Small code units (short functions, simple classes) are grouped into single batch prompts to amortize API overhead; large units are summarized individually. This significantly reduces total API call count on typical repositories.
-- **Atomic checkpoint writes:** Checkpoints are written via file-swap (write to temp → rename) to guarantee no partial-write corruption, a critical property for long-running jobs.
-- **Content-hash caching:** Cache keys incorporate both the summarization layer and the raw content hash, so the same function summarized at L1 vs. L2 gets distinct entries, and any code change automatically invalidates stale summ
-
----
-
-## Module Summaries
+## Appendix A: Module Summaries
 
 ### `phalanx [root files]`
 
-This directory represents the complete implementation of Phalanx, an end-to-end repository analysis and documentation system that transforms raw source code into multi-granularity summaries using Claude LLM APIs. The files form a layered pipeline: `parser.py` discovers and parses source files into structured `CodeUnit` representations, `prompts.py` constructs LLM-ready prompts at each abstraction level, `agents.py` executes concurrent LLM calls with caching and cost tracking, and `orchestrator.py` coordinates these components across five progressive summarization phases (L1–L5) with checkpoint-driven fault tolerance. Supporting infrastructure is provided by `cache.py` and `checkpoint.py` for persistence and resumability, `manifest.py` for tracking cross-run change history and incremental re-indexing, `github.py` for remote repository acquisition, and `diff_report.py` for serializing and narrating changes between runs. The primary public entry point is `repo_summarizer.py`, which exposes a CLI interface that accepts local or GitHub-hosted repositories and orchestrates the full pipeline to produce markdown reports, JSON artifacts, and diff-based summaries. The `tests/` subdirectory provides comprehensive behavioral coverage of all subsystems using mock-based isolation, ensuring correctness without incurring real API costs.
+This root directory implements a complete repository analysis and summarization system called Phalanx, spanning the full application stack from source code parsing through LLM-powered multi-level summarization to CLI output. The files form a layered dependency chain: `parser.py` discovers and extracts structured code units from source files, `agents.py` drives concurrent LLM calls using prompts from `prompts.py` to summarize those units at progressively higher abstraction levels (L1–L5), and `orchestrator.py` coordinates the full pipeline with checkpointing (`checkpoint.py`), caching (`cache.py`), and manifest tracking (`manifest.py`) to enable fault-tolerant, incremental re-indexing across runs. Supporting infrastructure includes `github.py` for remote repository ingestion, `diff_report.py` for serializing and narrating change reports, and `manifest.py` for detecting file-level deltas between indexing runs to avoid redundant reprocessing. The primary public interface is `repo_summarizer.py`, which serves as the CLI entry point and top-level workflow orchestrator, accepting GitHub URLs or local paths and emitting structured markdown and JSON summarization reports. The `tests/` subdirectory provides comprehensive unit and integration coverage of every subsystem using mock-based isolation, validating the correctness of parsing, caching, checkpointing, batching, and orchestration behaviors without requiring live LLM or filesystem dependencies.
 
 ### `tests`
 
@@ -88,12 +60,12 @@ The `tests` directory constitutes the automated test suite for the Phalanx repos
 
 ---
 
-## File Summaries
+## Appendix C: File Summaries
 
 ### `agents.py`
 */home/almcl/repos/phalanx/agents.py*
 
-This file implements a hierarchical code summarization system for repository indexing, centered around the `Summarizer` class which orchestrates concurrent LLM API calls to Claude models with intelligent caching and batching strategies across five abstraction layers (L1–L5). The `CostTracker` dataclass provides cost estimation and metrics reporting for API usage, tracking token consumption across Haiku and Sonnet models with blended pricing calculations. The `Summarizer` manages per-model concurrency control via semaphores, implements a two-tier caching system for individual units and composite summaries, and coordinates adaptive batching—processing small code units in groups via `_summarize_small_batch()` while handling large units individually through `summarize_unit()`. The system progressively synthesizes information from code units → files → directories → modules → repository clusters, with each level delegating to the next via `_call()`, a core middleware method that handles rate limiting, prompt caching, and error recovery. At the top level, `synthesize_final()` implements an agentic loop where Claude dynamically retrieves module and file summaries via tool invocation before generating a comprehensive 1,200-word repository overview, exemplifying a hierarchical abstraction pattern where lower-level summaries feed into progressively higher-level synthesis tasks.
+The file implements a hierarchical code summarization system centered around the `Summarizer` class, which orchestrates concurrent LLM API calls to Anthropic's Claude models for generating multi-level repository documentation. It defines the `CostTracker` dataclass to monitor token usage and estimate expenses across Haiku/Sonnet variants, and the `Summarizer` class which manages a five-layer abstraction pipeline: individual code units (L1) are batch-processed and cached, combined into file summaries (L2), aggregated into directory summaries (L3), composed into module summaries (L4), and finally synthesized into a repository overview (L5) using an agentic loop with tool use. The core pattern involves constructing layer-specific prompts, leveraging a two-tier caching system keyed on source content to reduce API calls, enforcing per-model concurrency limits via semaphores, and implementing retry logic with exponential backoff for rate limiting. Key methods like `summarize_units_batched()`, `summarize_file()`, and `synthesize_final()` form a dependency chain where smaller units are combined and re-summarized at progressively higher levels of abstraction, with the final synthesis step using tool invocation to allow the model to dynamically query module and file metadata before generating the output. The entire design optimizes for throughput and cost efficiency while maintaining cache coherence across multiple summarization requests.
 
 ### `cache.py`
 */home/almcl/repos/phalanx/cache.py*
@@ -133,12 +105,12 @@ This file implements the core parsing and discovery infrastructure for a multi-l
 ### `prompts.py`
 */home/almcl/repos/phalanx/prompts.py*
 
-This file implements a prompt-generation utility layer for a hierarchical repository indexing and summarization system, serving as the interface between raw code analysis and language model consumption. It defines a family of specialized prompt-construction functions organized across five abstraction levels—from `l1_unit_prompt` (individual code units) through `l5_final_prompt` (full repository analysis)—each tailored to synthesize summaries at increasing scales of granularity while managing token budgets through selective truncation. The file establishes a clear factory-like pattern where each function accepts structured metadata and prior-level summaries, formats them into human-readable markdown-based prompts with explicit instructions, and returns LLM-ready strings; supplementary functions like `l3_chunk_prompt`, `l3_merge_prompt`, and `l4_cluster_prompt` support alternative hierarchical decomposition strategies for handling large repositories. Beyond core summarization, it provides specialized variants including `diff_digest_prompt` for change analysis, `doc_file_prompt` for configuration/documentation artifacts, and `l5_tool_use_prompt` for agent-based selective exploration, collectively enabling flexible multi-strategy repository understanding. The underlying pattern treats prompt construction as a composition of metadata, prior results, and instruction templates, with consistent emphasis on evidence-based analysis, controlled output length, and semantic coherence across hierarchical boundaries.
+This file implements a **prompt template factory** for a hierarchical code summarization system, constructing structured LLM prompts at five escalating levels of abstraction—from individual code units (L1) through files (L2), directories (L3), modules (L4), and finally repository-wide analysis (L5). Each function accepts metadata and pre-computed summaries from the level below, formats them according to domain-specific instructions, and returns a complete prompt string that guides an LLM to synthesize that layer's summary with consistent structure, word count targets, and formatting constraints. The file encodes the core abstraction hierarchy of a repository indexing system, where prompts act as the interface between hierarchical aggregation logic and LLM intelligence, enabling progressive summarization from source code up to architectural overviews. Beyond the main pipeline, it provides specialized prompts for auxiliary tasks like diff digestion, documentation file summaries, and deep-mode chunked analysis, each following the same pattern of metadata formatting and instruction templating. This utility design—where all functions are pure template generators with no external dependencies—makes the prompts portable, testable, and easily modifiable as LLM-based summarization strategies evolve.
 
 ### `repo_summarizer.py`
 */home/almcl/repos/phalanx/repo_summarizer.py*
 
-This file serves as the CLI entry point and orchestration layer for a repository analysis system, translating command-line arguments into structured summarization workflows. It implements a comprehensive pipeline that accepts local or GitHub-hosted repositories, delegates deep analysis to a `RepoOrchestrator` instance, and generates multiple output formats (markdown reports, JSON, and diff-based summaries) that synthesize file-level analysis, performance metrics, and documentation into human-readable artifacts. The core pattern is a **coordinator/bridge pattern**, where `main()` handles configuration, credential validation, and checkpoint management, while specialized formatting functions—`build_markdown_report()`, `build_diff_only_summary()`, and `summarize_changed_files()`—transform the orchestrator's structured results into consumable outputs for different use cases (full reports, incremental diffs, and individual file summaries). The file manages both synchronous concerns (argument parsing, file I/O, directory handling) and asynchronous operations (parallel file summarization via `asyncio.gather`), with `run_cli()` bridging the synchronous CLI invocation to the async runtime. Through its integration of caching, resumable checkpoints, and cost-estimation modes, this file enables flexible, efficient repository analysis while abstracting away the complexity of API orchestration from end users.
+`/home/almcl/repos/phalanx/repo_summarizer.py` is the CLI entry point and orchestration layer for repository summarization, responsible for parsing command-line arguments, managing the end-to-end workflow from repository input (GitHub URLs or local paths) through analysis to formatted output. The file implements a pipeline pattern where `main()` coordinates the `RepoOrchestrator` to analyze repositories and generate summaries, while supporting both full and diff-only modes for resumable/incremental analysis. Key functions like `summarize_changed_files()` parallelize file-level summarization via async gathering, `build_markdown_report()` structures the final output by hierarchically composing metadata, module summaries, and statistics, and `build_diff_only_summary()` creates lightweight updates by merging change metrics with prior context. The file also provides utility functions such as `_normalize_final_summary_markdown()` that clean up LLM-generated markdown to enforce consistent heading levels and remove boilerplate, ensuring output integrates cleanly into the report structure. Overall, this file acts as the public interface and workflow orchestrator, translating user intent into repository analysis while managing credentials, concurrency, caching, and multiple output formats (markdown, JSON, diff reports).
 
 ### `test_agents_batching.py`
 */home/almcl/repos/phalanx/tests/test_agents_batching.py*
@@ -195,16 +167,16 @@ This test file validates the diff-only summarization functionality of a reposito
 ## Analysis Stats
 
 - Files analyzed: 20
-- Code units parsed: 233
+- Code units parsed: 234
 - Excluded directories: 5
 - Doc files summarized: 0
 - Directories summarized: 2
 - Modules summarized: 2
 - Languages: python
-- API calls: 7
-- Cache hits: 278
-- Input tokens: 16,449
-- Output tokens: 3,535
+- API calls: 12
+- Cache hits: 274
+- Input tokens: 22,813
+- Output tokens: 3,728
 
 ### Excluded Directory Paths
 

@@ -575,9 +575,10 @@ class Summarizer:
         messages: list[dict] = [{
             "role": "user",
             "content": (
-                "Write the final ~1,200 word technical summary with sections: "
-                "Overview, Architecture, Core Components, Data Flow & Key Interactions, "
-                "Technical Patterns & Design Decisions, Developer Notes."
+                "Write a 700-900 word report. Output markdown body only with no H1 title "
+                "and no preamble. Start with `## Executive Summary` and use exactly these H2 "
+                "sections in order: Executive Summary, System Architecture, Key Components, "
+                "Operational Model, Risks & Limitations, Testing Coverage Snapshot."
             ),
         }]
 

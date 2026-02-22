@@ -39,6 +39,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -52,8 +53,32 @@ from diff_report import manifest_diff_to_dict, write_diff_json, generate_diff_di
 from parser import parse_file
 
 
+def _normalize_final_summary_markdown(text: str) -> str:
+    """Normalize model output to fit the report layout."""
+    boilerplate_patterns = [
+        re.compile(r"^here is (the )?(complete )?technical summary:?$", re.IGNORECASE),
+        re.compile(r"^here is (the )?(full )?technical report:?$", re.IGNORECASE),
+        re.compile(r"^now i have comprehensive information.*$", re.IGNORECASE),
+    ]
+
+    cleaned_lines: list[str] = []
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        if any(p.match(stripped) for p in boilerplate_patterns):
+            continue
+        if stripped == "---":
+            continue
+        if line.startswith("# "):
+            # Keep a single H1 from being nested under the report H1.
+            line = "## " + line[2:]
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines).strip()
+
+
 def build_markdown_report(result) -> str:
     excluded_dirs = result.stats.get("excluded_directories", [])
+    final_summary = _normalize_final_summary_markdown(result.final_summary)
     lines = [
         f"# Repository Summary: `{result.repo_name}`",
         "",
@@ -64,11 +89,11 @@ def build_markdown_report(result) -> str:
         "",
         "---",
         "",
-        result.final_summary,
+        final_summary,
         "",
         "---",
         "",
-        "## Module Summaries",
+        "## Appendix A: Module Summaries",
         "",
     ]
 
@@ -79,7 +104,7 @@ def build_markdown_report(result) -> str:
         lines.append("")
 
     if result.stats.get("doc_files_summarized", 0) > 0:
-        lines += ["---", "", "## Documentation & Config Files", ""]
+        lines += ["---", "", "## Appendix B: Documentation & Config Files", ""]
         for d in result.doc_summaries:
             lines.append(f"### `{Path(d['path']).name}`")
             lines.append(f"*{d['path']}*")
@@ -87,7 +112,7 @@ def build_markdown_report(result) -> str:
             lines.append(d["summary"])
             lines.append("")
 
-    lines += ["---", "", "## File Summaries", ""]
+    lines += ["---", "", "## Appendix C: File Summaries", ""]
     for path, summary in sorted(result.file_summaries.items()):
         lines.append(f"### `{Path(path).name}`")
         lines.append(f"*{path}*")

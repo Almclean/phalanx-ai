@@ -204,35 +204,29 @@ Directory structure:
 Module summaries from hierarchical analysis:
 {modules_block}
 
-Write a technical summary of approximately 1,200 words. Structure it as flowing prose with the following sections
-(use markdown H2 headers for each section):
+Write 700-900 words in Markdown. Output only the report body.
+Do not include any H1 title. Start directly with `## Executive Summary`.
+Use exactly these H2 sections in this order:
 
-## Overview
-What this repository is, what problem it solves, and who/what uses it. Include the technology stack.
+## Executive Summary
+- Provide 5-10 bullet points focused on architecture, purpose, and operational behavior.
 
-## Architecture
-The high-level architectural design: layers, major components, how they fit together. Discuss patterns
-(microservices, monolith, plugin architecture, MVC, etc.) with evidence from the code.
+## System Architecture
+- Explain L1-L5 flow, subsystem boundaries, and component interactions.
 
-## Core Components
-Walk through the most important modules/packages, what each owns, and their key abstractions.
-Be specific — name important types, interfaces, or functions where they clarify the design.
+## Key Components
+- Cover only the most important 6-8 modules/files and why they matter.
 
-## Data Flow & Key Interactions
-How data moves through the system: entry points, processing pipeline, persistence, outputs.
-Describe the most important call paths or workflows.
+## Operational Model
+- Explain runtime behavior, caching, checkpoint/resume, cost/concurrency controls, and diff/incremental flow.
 
-## Technical Patterns & Design Decisions
-Notable engineering choices: error handling strategy, concurrency model, abstraction patterns,
-testing approach, configuration management. Point out anything architecturally interesting.
+## Risks & Limitations
+- Call out uncertainty, likely failure modes, tradeoffs, and current technical debt.
 
-## Developer Notes
-What a new developer needs to know to start contributing: where to find entry points,
-key conventions, anything that's non-obvious or could trip someone up.
+## Testing Coverage Snapshot
+- Summarize what test areas are well-covered and what gaps remain.
 
-Write in confident, precise technical prose. Be specific — generic descriptions are useless.
-If something is unclear from the summaries, say so rather than fabricating.
-Target: exactly 1,200 words."""
+Use concrete evidence from the summaries. If something is unclear, explicitly say so instead of guessing."""
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +344,11 @@ Use tools to gather only the module and file summaries needed to understand the 
 Start with `list_modules`, then selectively call `get_module_summary` for the most important
 modules. Do not fetch every module by default.
 
-When you have enough context, produce a ~1,200 word summary with sections:
-Overview, Architecture, Core Components, Data Flow & Key Interactions,
-Technical Patterns & Design Decisions, Developer Notes."""
+When you have enough context, produce a 700-900 word report.
+Output only markdown body text (no H1 title, no preamble).
+Start with `## Executive Summary` and use exactly these H2 sections in order:
+Executive Summary, System Architecture, Key Components, Operational Model,
+Risks & Limitations, Testing Coverage Snapshot."""
 
 
 # ---------------------------------------------------------------------------
