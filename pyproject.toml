@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phalanx"
+version = "0.1.0"
+description = "Recursive hierarchical codebase summarizer powered by LLM agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "anthropic",
+  "tree-sitter",
+  "tree-sitter-python",
+  "tree-sitter-typescript",
+  "tree-sitter-rust",
+  "tree-sitter-go",
+]
+
+[project.scripts]
+phalanx = "repo_summarizer:run_cli"
+
+[tool.setuptools]
+py-modules = [
+  "repo_summarizer",
+  "orchestrator",
+  "agents",
+  "parser",
+  "cache",
+  "github",
+  "prompts",
+]
