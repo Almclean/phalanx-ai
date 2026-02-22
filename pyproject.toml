@@ -15,6 +15,8 @@ dependencies = [
   "tree-sitter-typescript",
   "tree-sitter-rust",
   "tree-sitter-go",
+  "tree-sitter-c",
+  "tree-sitter-cpp",
 ]
 
 [project.scripts]
@@ -26,6 +28,7 @@ py-modules = [
   "orchestrator",
   "agents",
   "parser",
+  "checkpoint",
   "cache",
   "github",
   "prompts",

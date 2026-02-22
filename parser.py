@@ -1,5 +1,5 @@
 """
-parser.py — AST-based code unit extraction for Python, TypeScript, Rust, Go.
+parser.py — AST-based code unit extraction for Python, TypeScript, Rust, Go, C, C++.
 
 Extracts functions, classes, structs, impls, interfaces etc. as discrete
 "code units" that become the L1 summarization targets.
@@ -17,6 +17,8 @@ from typing import Optional
 import re
 
 from tree_sitter import Language, Parser, Node
+import tree_sitter_c as tsc
+import tree_sitter_cpp as tscpp
 import tree_sitter_python as tspython
 import tree_sitter_typescript as tsts
 import tree_sitter_rust as tsrust
@@ -28,6 +30,8 @@ import tree_sitter_go as tsgo
 # ---------------------------------------------------------------------------
 
 _LANGUAGES: dict[str, Language] = {
+    "c": Language(tsc.language()),
+    "cpp": Language(tscpp.language()),
     "python": Language(tspython.language()),
     "typescript": Language(tsts.language_typescript()),
     "tsx": Language(tsts.language_tsx()),
@@ -36,6 +40,12 @@ _LANGUAGES: dict[str, Language] = {
 }
 
 _EXT_MAP: dict[str, str] = {
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
     ".py": "python",
     ".ts": "typescript",
     ".tsx": "tsx",
@@ -63,6 +73,22 @@ _DOC_SKIP_PATTERNS: set[str] = {
 }
 
 _TOP_LEVEL_NODES: dict[str, set[str]] = {
+    "c": {
+        "function_definition",
+        "struct_specifier",
+        "enum_specifier",
+        "type_definition",
+    },
+    "cpp": {
+        "function_definition",
+        "class_specifier",
+        "struct_specifier",
+        "enum_specifier",
+        "namespace_definition",
+        "template_declaration",
+        "function_template_declaration",
+        "type_definition",
+    },
     "python": {
         "function_definition",
         "async_function_definition",
@@ -109,6 +135,8 @@ _TOP_LEVEL_NODES: dict[str, set[str]] = {
 }
 
 _COMMENT_NODES: dict[str, set[str]] = {
+    "c": {"comment"},
+    "cpp": {"comment"},
     "python": {"comment"},
     "typescript": {"comment"},
     "tsx": {"comment"},
@@ -218,7 +246,46 @@ def _extract_python_docstring(node: Node, source_bytes: bytes) -> Optional[str]:
 # Name extraction
 # ---------------------------------------------------------------------------
 
+def _find_identifier_text(node: Node, source_bytes: bytes) -> Optional[str]:
+    """Return the first identifier-like token in a subtree."""
+    target_types = {
+        "identifier",
+        "type_identifier",
+        "field_identifier",
+        "namespace_identifier",
+        "name",
+    }
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        for child in current.children:
+            if child.type in target_types:
+                return source_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+            stack.append(child)
+    return None
+
+
 def _get_node_name(node: Node, source_bytes: bytes) -> str:
+    if node.type == "function_definition":
+        for child in node.children:
+            if child.type in ("function_declarator", "pointer_declarator", "reference_declarator"):
+                name = _find_identifier_text(child, source_bytes)
+                if name:
+                    return name
+
+    if node.type == "namespace_definition":
+        for child in node.children:
+            if child.type in ("namespace_identifier", "identifier", "name"):
+                return source_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+
+    if node.type in ("template_declaration", "function_template_declaration"):
+        for child in node.children:
+            if child.type == "template_parameter_list":
+                continue
+            name = _find_identifier_text(child, source_bytes)
+            if name:
+                return name
+
     if node.type == "type_declaration":
         for child in node.children:
             if child.type == "type_spec":
@@ -256,9 +323,15 @@ def _get_node_kind(node_type: str) -> str:
         "arrow_function": "arrow function",
         "class_definition": "class",
         "class_declaration": "class",
+        "class_specifier": "class",
+        "struct_specifier": "struct",
+        "namespace_definition": "namespace",
+        "template_declaration": "template",
+        "function_template_declaration": "template function",
         "interface_declaration": "interface",
         "type_alias_declaration": "type alias",
         "enum_declaration": "enum",
+        "enum_specifier": "enum",
         "enum_item": "enum",
         "export_statement": "export",
         "function_item": "function",
@@ -272,6 +345,7 @@ def _get_node_kind(node_type: str) -> str:
         "type_declaration": "type",
         "const_declaration": "const",
         "var_declaration": "var",
+        "type_definition": "typedef",
         "decorated_definition": "decorated definition",
     }
     return mapping.get(node_type, node_type)
@@ -302,23 +376,33 @@ def _collect_units(
         docstring = _extract_python_docstring(node, source_bytes) if language == "python" else None
         doc_comment = _extract_preceding_comment(node, source_bytes, language)
 
-        unit = CodeUnit(
-            name=name,
-            kind=kind,
-            source=source,
-            language=language,
-            file_path=file_path,
-            start_line=node.start_point[0] + 1,
-            end_line=node.end_point[0] + 1,
-            docstring=docstring,
-            doc_comment=doc_comment,
-            parent_name=parent_name,
+        # Rust test wrappers (`mod tests` / `mod test`) are large containers that
+        # duplicate the enclosed test functions; skip the wrapper unit itself.
+        is_rust_test_wrapper = (
+            language == "rust"
+            and kind == "module"
+            and name.lower() in {"tests", "test"}
         )
-        units.append(unit)
+
+        if not is_rust_test_wrapper:
+            unit = CodeUnit(
+                name=name,
+                kind=kind,
+                source=source,
+                language=language,
+                file_path=file_path,
+                start_line=node.start_point[0] + 1,
+                end_line=node.end_point[0] + 1,
+                docstring=docstring,
+                doc_comment=doc_comment,
+                parent_name=parent_name,
+            )
+            units.append(unit)
 
         if node.type in (
             "class_definition", "class_declaration", "impl_item",
             "trait_item", "mod_item", "decorated_definition",
+            "namespace_definition", "template_declaration", "function_template_declaration",
         ):
             for child in node.children:
                 _collect_units(child, source_bytes, language, file_path, units, name)

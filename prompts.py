@@ -38,25 +38,13 @@ def l1_unit_prompt(
     if len(source) > 8000:
         source = source[:8000] + "\n... [truncated for brevity]"
 
-    return f"""You are a senior engineer summarizing a single code unit for a repository index.
-
-Language: {language}
+    return f"""Language: {language}
 File: {file_path}
 Unit: {unit_kind} `{unit_name}`{parent_ctx}{doc_ctx}
 
 ```{language}
 {source}
-```
-
-Write a concise 2-4 sentence technical summary covering:
-1. What this {unit_kind} does (its purpose and responsibility)
-2. Key inputs, outputs, or side effects (if meaningful)
-3. Any important patterns, algorithms, or gotchas worth noting
-
-If a doc comment or docstring is provided above, treat it as authoritative — use it to \
-inform your summary but don't just repeat it verbatim.
-Be specific and technical. Do not start with "This {unit_kind}..." — vary your phrasing.
-Output only the summary text, no headers or bullet points."""
+```"""
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +232,126 @@ key conventions, anything that's non-obvious or could trip someone up.
 Write in confident, precise technical prose. Be specific — generic descriptions are useless.
 If something is unclear from the summaries, say so rather than fabricating.
 Target: exactly 1,200 words."""
+
+
+# ---------------------------------------------------------------------------
+# Deep-mode prompt additions
+# ---------------------------------------------------------------------------
+
+def l3_chunk_prompt(
+    *,
+    dir_path: str,
+    file_summaries_subset: list[dict],  # [{name, summary}]
+    chunk_index: int,
+    total_chunks: int,
+) -> str:
+    files_block = "\n".join(
+        f"- `{f['name']}`: {f['summary']}"
+        for f in file_summaries_subset
+    )
+    return f"""You are a senior engineer writing a directory-level summary for a repository index.
+
+Directory: {dir_path}
+Chunk: {chunk_index} of {total_chunks}
+
+Files in this chunk:
+{files_block}
+
+Write 3-5 sentences summarizing only this chunk of files. Focus on:
+- The responsibilities represented by this subset
+- Any strong relationships among files in this chunk
+- How this chunk likely contributes to the parent directory's overall role
+
+Do not assume files not shown here. Output only the summary text."""
+
+
+def l3_merge_prompt(
+    *,
+    dir_path: str,
+    chunk_summaries: list[str],
+) -> str:
+    chunks_block = "\n".join(
+        f"- Chunk {i + 1}: {summary}"
+        for i, summary in enumerate(chunk_summaries)
+    )
+    return f"""You are a senior engineer merging chunk-level summaries into one directory summary.
+
+Directory: {dir_path}
+
+Chunk summaries:
+{chunks_block}
+
+Synthesize these into one coherent 3-5 sentence directory summary.
+Resolve apparent conflicts and remove repetition.
+Output only the final merged summary."""
+
+
+def l4_cluster_prompt(
+    *,
+    cluster_modules: list[dict],  # [{name, summary}]
+) -> str:
+    modules_block = "\n".join(
+        f"- `{m['name']}`: {m['summary']}"
+        for m in cluster_modules
+    )
+    return f"""You are a senior engineer summarizing a cluster of top-level modules.
+
+Cluster modules:
+{modules_block}
+
+Write 4-6 sentences describing the shared concern this module cluster appears to own,
+how these modules relate, and what architectural boundaries are visible.
+Output only the summary text."""
+
+
+def l4_final_merge_prompt(
+    *,
+    cluster_summaries: list[str],
+) -> str:
+    clusters_block = "\n".join(
+        f"- Cluster {i + 1}: {summary}"
+        for i, summary in enumerate(cluster_summaries)
+    )
+    return f"""You are a senior engineer consolidating cluster-level architectural summaries.
+
+Cluster summaries:
+{clusters_block}
+
+Produce a concise architectural synthesis in 5-8 sentences that captures:
+- The major subsystems
+- Their relationships and boundaries
+- The dominant architectural patterns
+
+Output only plain summary text, no headers."""
+
+
+def l5_tool_use_prompt(
+    *,
+    repo_name: str,
+    languages: list[str],
+    file_count: int,
+    repo_structure: str,
+    readme_excerpt: Optional[str],
+) -> str:
+    lang_str = ", ".join(languages)
+    readme_block = f"\nREADME excerpt:\n{readme_excerpt[:1500]}\n" if readme_excerpt else ""
+
+    return f"""You are a principal engineer producing a technical summary via tool use.
+
+Repository: {repo_name}
+Languages: {lang_str}
+Files analyzed: {file_count}
+{readme_block}
+Repository structure:
+{repo_structure}
+
+Use tools to gather only the module and file summaries needed to understand the architecture.
+Start with `list_modules`, then selectively call `get_module_summary` for the most important
+modules. Do not fetch every module by default.
+
+When you have enough context, produce a ~1,200 word summary with sections:
+Overview, Architecture, Core Components, Data Flow & Key Interactions,
+Technical Patterns & Design Decisions, Developer Notes."""
 
 
 # ---------------------------------------------------------------------------

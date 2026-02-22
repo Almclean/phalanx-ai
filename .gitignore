@@ -23,5 +23,8 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Local environment secrets
+.env
+
 # Windows ADS artifacts from copied files
 *:Zone.Identifier

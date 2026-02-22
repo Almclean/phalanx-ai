@@ -132,10 +132,32 @@ async def main():
                         help="Specific commit SHA or tag to checkout after clone")
     parser.add_argument("--max-concurrent", type=int, default=20,
                         help="Max concurrent API calls (default: 20)")
-    parser.add_argument("--max-files", type=int, default=2000,
-                        help="Abort if repo exceeds this many source files (default: 2000)")
+    parser.add_argument("--haiku-concurrency", type=int, default=None,
+                        help="Max concurrent Haiku API calls (default: --max-concurrent)")
+    parser.add_argument("--sonnet-concurrency", type=int, default=None,
+                        help="Max concurrent Sonnet API calls (default: --max-concurrent)")
+    parser.add_argument("--max-files", type=int, default=10000,
+                        help="Abort if repo exceeds this many source files (default: 10000)")
+    parser.add_argument("--deep-mode-threshold", type=int, default=500,
+                        help="Enable deep mode when file count >= threshold (default: 500)")
+    parser.add_argument("--l3-chunk-size", type=int, default=15,
+                        help="Max files per directory chunk in deep mode (default: 15)")
+    parser.add_argument("--l4-cluster-size", type=int, default=8,
+                        help="Max modules per cluster in deep mode (default: 8)")
+    parser.add_argument("--l1-batch-size", type=int, default=8,
+                        help="Units per L1 batch request (default: 8)")
+    parser.add_argument("--l1-batch-threshold", type=int, default=500,
+                        help="Max source chars for L1 batch eligibility (default: 500)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Estimate cost and exit without making API calls")
     parser.add_argument("--cache-dir", type=Path, default=None,
                         help="Cache directory (default: ~/.repo_summarizer_cache)")
+    parser.add_argument("--checkpoint-dir", type=Path, default=None,
+                        help="Checkpoint directory for resumable runs")
+    parser.add_argument("--resume", dest="resume", action="store_true", default=True,
+                        help="Resume from latest checkpoint when available (default: on)")
+    parser.add_argument("--no-resume", dest="resume", action="store_false",
+                        help="Disable checkpoint resume")
     parser.add_argument("--no-cache", action="store_true",
                         help="Disable caching (always re-summarize)")
     parser.add_argument("--skip-docs", action="store_true",
@@ -152,7 +174,7 @@ async def main():
 
     # API key
     api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
+    if not args.dry_run and not api_key:
         print("Error: ANTHROPIC_API_KEY environment variable not set.", file=sys.stderr)
         sys.exit(1)
 
@@ -194,17 +216,28 @@ async def main():
             print(f"Error: Path does not exist: {repo_path}", file=sys.stderr)
             sys.exit(1)
 
-    print(f"\n🔍 Repo Summarizer — analyzing `{repo_path.name}`", flush=True)
+    display_repo_name = repo_path.resolve().name or str(repo_path.resolve())
+    print(f"\n🔍 Repo Summarizer — analyzing `{display_repo_name}`", flush=True)
     start = time.time()
 
     orchestrator = RepoOrchestrator(
         api_key=api_key,
         cache_dir=cache_dir,
         max_concurrent=args.max_concurrent,
+        haiku_concurrency=args.haiku_concurrency,
+        sonnet_concurrency=args.sonnet_concurrency,
         verbose=args.verbose,
         exclude_dirs=extra_excludes,
         max_files=args.max_files,
         skip_docs=args.skip_docs,
+        deep_mode_threshold=args.deep_mode_threshold,
+        l3_chunk_size=args.l3_chunk_size,
+        l4_cluster_size=args.l4_cluster_size,
+        l1_batch_size=args.l1_batch_size,
+        l1_batch_threshold=args.l1_batch_threshold,
+        dry_run=args.dry_run,
+        checkpoint_dir=args.checkpoint_dir,
+        resume=args.resume,
     )
 
     try:
@@ -220,7 +253,7 @@ async def main():
     elapsed = time.time() - start
     print(f"\n✅ Complete in {elapsed:.1f}s\n", flush=True)
 
-    if args.summary_only:
+    if args.dry_run or args.summary_only:
         output_text = result.final_summary
     else:
         output_text = build_markdown_report(result)
