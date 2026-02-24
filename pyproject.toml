@@ -1,20 +1,20 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "phalanx"
+name = "phalanx-ai"
 version = "0.1.0"
 description = "Recursive hierarchical codebase summarizer powered by LLM agents"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Alistair McLean" }]
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["llm", "codebase", "summarization", "tree-sitter", "developer-tools"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -33,9 +33,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Almclean/phalanx"
-Repository = "https://github.com/Almclean/phalanx"
-Issues = "https://github.com/Almclean/phalanx/issues"
+Homepage = "https://github.com/Almclean/phalanx-ai"
+Repository = "https://github.com/Almclean/phalanx-ai"
+Issues = "https://github.com/Almclean/phalanx-ai/issues"
 
 [project.scripts]
 phalanx = "repo_summarizer:run_cli"
