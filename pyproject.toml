@@ -23,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
   "anthropic",
+  "openai",
   "tree-sitter",
   "tree-sitter-python",
   "tree-sitter-typescript",

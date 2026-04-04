@@ -84,3 +84,25 @@ def test_large_units_are_not_batched(tmp_path: Path):
     results = asyncio.run(summarizer.summarize_units_batched(units))
     summaries = [s for _, s in results]
     assert summaries == ["solo:a", "solo:b"]
+
+
+def test_openai_small_units_use_structured_batch_output(tmp_path: Path):
+    summarizer = Summarizer(
+        api_key="test",
+        provider="openai",
+        client=object(),
+        cache_dir=tmp_path / "cache",
+        l1_batch_size=8,
+        l1_batch_threshold=500,
+    )
+
+    async def fake_call(*args, **kwargs):
+        assert kwargs.get("response_format", {}).get("type") == "json_schema"
+        return '{"summaries":["summary-a","summary-b"]}'
+
+    summarizer._call = fake_call  # type: ignore[method-assign]
+
+    units = [_unit("a", "fn a() {}"), _unit("b", "fn b() {}")]
+    results = asyncio.run(summarizer.summarize_units_batched(units))
+    summaries = [s for _, s in results]
+    assert summaries == ["summary-a", "summary-b"]

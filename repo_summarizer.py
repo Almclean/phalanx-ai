@@ -28,7 +28,7 @@ Usage:
     python repo_summarizer.py /path/to/big-repo --max-files 5000
 
 Environment:
-    ANTHROPIC_API_KEY  — required (or pass --api-key)
+    ANTHROPIC_API_KEY / OPENAI_API_KEY  — provider-specific key (or pass --api-key)
     GITHUB_TOKEN       — optional, used for private repos (or pass --github-token)
 
 Supported languages: Python, TypeScript/JavaScript, Rust, Go, C, C++
@@ -51,6 +51,31 @@ from orchestrator import RepoOrchestrator
 from manifest import ManifestStore, build_run_manifest, new_run_id, compute_repo_changes
 from diff_report import manifest_diff_to_dict, write_diff_json, generate_diff_digest
 from parser import parse_file
+
+
+def _load_local_env() -> None:
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent / ".env",
+    ]
+    seen: set[Path] = set()
+    for env_path in candidates:
+        if env_path in seen or not env_path.exists():
+            continue
+        seen.add(env_path)
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip().removeprefix("export ").strip()
+            value = value.strip().strip("'").strip('"')
+            if key:
+                os.environ.setdefault(key, value)
 
 
 def _normalize_final_summary_markdown(text: str) -> str:
@@ -170,6 +195,7 @@ def build_diff_only_summary(previous_summary: str, *, added: int, modified: int,
 
 
 async def main():
+    _load_local_env()
     parser = argparse.ArgumentParser(
         description="Recursively summarize a code repository using hierarchical LLM agents.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -183,8 +209,18 @@ async def main():
                         help="Write markdown report to this file")
     parser.add_argument("--json-output", type=Path, default=None,
                         help="Also write full JSON report")
+    parser.add_argument("--provider", choices=["anthropic", "openai"], default="anthropic",
+                        help="LLM provider to use (default: anthropic)")
     parser.add_argument("--api-key", default=None,
-                        help="Anthropic API key (default: ANTHROPIC_API_KEY env var)")
+                        help="Provider API key (default: ANTHROPIC_API_KEY or OPENAI_API_KEY)")
+    parser.add_argument("--small-model", default=None,
+                        help="Override the small/cheap model used for L1/L2/doc summarization")
+    parser.add_argument("--large-model", default=None,
+                        help="Override the large model used for L3/L4/L5 synthesis")
+    parser.add_argument("--small-verbosity", choices=["low", "medium", "high"], default=None,
+                        help="OpenAI-only verbosity for the small model tier (default: low)")
+    parser.add_argument("--large-verbosity", choices=["low", "medium", "high"], default=None,
+                        help="OpenAI-only verbosity for the large model tier (default: medium)")
     parser.add_argument("--github-token", default=None,
                         help="GitHub PAT for private repos (default: GITHUB_TOKEN env var)")
     parser.add_argument("--branch", default=None,
@@ -193,10 +229,10 @@ async def main():
                         help="Specific commit SHA or tag to checkout after clone")
     parser.add_argument("--max-concurrent", type=int, default=20,
                         help="Max concurrent API calls (default: 20)")
-    parser.add_argument("--haiku-concurrency", type=int, default=None,
-                        help="Max concurrent Haiku API calls (default: --max-concurrent)")
-    parser.add_argument("--sonnet-concurrency", type=int, default=None,
-                        help="Max concurrent Sonnet API calls (default: --max-concurrent)")
+    parser.add_argument("--small-concurrency", "--haiku-concurrency", dest="small_concurrency", type=int, default=None,
+                        help="Max concurrent calls for the small model tier (default: --max-concurrent)")
+    parser.add_argument("--large-concurrency", "--sonnet-concurrency", dest="large_concurrency", type=int, default=None,
+                        help="Max concurrent calls for the large model tier (default: --max-concurrent)")
     parser.add_argument("--max-files", type=int, default=10000,
                         help="Abort if repo exceeds this many source files (default: 10000)")
     parser.add_argument("--deep-mode-threshold", type=int, default=500,
@@ -253,10 +289,10 @@ async def main():
 
     args = parser.parse_args()
 
-    # API key
-    api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY")
+    provider_env_var = "OPENAI_API_KEY" if args.provider == "openai" else "ANTHROPIC_API_KEY"
+    api_key = args.api_key or os.environ.get(provider_env_var)
     if not args.dry_run and not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable not set.", file=sys.stderr)
+        print(f"Error: {provider_env_var} environment variable not set.", file=sys.stderr)
         sys.exit(1)
 
     # GitHub token
@@ -304,11 +340,16 @@ async def main():
     start = time.time()
 
     orchestrator = RepoOrchestrator(
+        provider=args.provider,
         api_key=api_key,
+        small_model=args.small_model,
+        large_model=args.large_model,
+        small_model_verbosity=args.small_verbosity,
+        large_model_verbosity=args.large_verbosity,
         cache_dir=cache_dir,
         max_concurrent=args.max_concurrent,
-        haiku_concurrency=args.haiku_concurrency,
-        sonnet_concurrency=args.sonnet_concurrency,
+        small_model_concurrency=args.small_concurrency,
+        large_model_concurrency=args.large_concurrency,
         verbose=args.verbose,
         exclude_dirs=extra_excludes,
         max_files=args.max_files,

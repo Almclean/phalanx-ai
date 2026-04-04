@@ -42,17 +42,17 @@ It also supports:
 
 ```text
 REPO
-  -> L1: Unit summaries        (Haiku, parallel, batched for small units)
-  -> L2: File summaries        (Haiku)
-  -> L3: Directory summaries   (Sonnet; chunked in deep mode)
-  -> L4: Module summaries      (Sonnet; clustered in deep mode)
-  -> L5: Final synthesis       (Sonnet tool-use loop)
+  -> L1: Unit summaries        (small model, parallel, batched for small units)
+  -> L2: File summaries        (small model)
+  -> L3: Directory summaries   (large model; chunked in deep mode)
+  -> L4: Module summaries      (large model; clustered in deep mode)
+  -> L5: Final synthesis       (large model tool-use loop)
 ```
 
 Key design points:
 
 - Bottom-up summarization to preserve structure
-- Tiered model concurrency (Haiku and Sonnet limits)
+- Tiered model concurrency (small and large model limits)
 - Content-addressed summary cache
 - Checkpointed phases for resumable long runs
 
@@ -117,10 +117,11 @@ This creates `.venv`, installs dependencies, and installs the local `phalanx` CL
 
 ## Environment Setup
 
-Set your Anthropic key before running non-dry workflows.
+Set the provider key you want to use before running non-dry workflows. `.env` files in the repo root are loaded automatically.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-proj-...
 ```
 
 Optional for private GitHub repos:
@@ -144,6 +145,17 @@ set +a
 ```bash
 uv run phalanx /path/to/repo
 ```
+
+### Analyze a local repo with OpenAI
+
+```bash
+uv run phalanx /path/to/repo --provider openai
+```
+
+OpenAI defaults:
+
+- Small tier: `gpt-5.4-mini` with `low` verbosity
+- Large tier: `gpt-5.4` with `medium` verbosity
 
 ### Analyze a GitHub repo URL
 
@@ -247,8 +259,13 @@ uv run phalanx /path/to/repo --no-resume
 ### Performance and scale
 
 - `--max-concurrent N`: baseline concurrency
-- `--haiku-concurrency N`: Haiku call limit
-- `--sonnet-concurrency N`: Sonnet call limit
+- `--provider anthropic|openai`: select the LLM backend
+- `--small-model NAME`: override the L1/L2/doc model
+- `--large-model NAME`: override the L3/L4/L5 model
+- `--small-verbosity low|medium|high`: OpenAI-only verbosity for the small tier
+- `--large-verbosity low|medium|high`: OpenAI-only verbosity for the large tier
+- `--small-concurrency N`: small-model call limit
+- `--large-concurrency N`: large-model call limit
 - `--deep-mode-threshold N`: enable deep mode at file-count threshold
 - `--l3-chunk-size N`: max files per L3 chunk
 - `--l4-cluster-size N`: max modules per L4 cluster
@@ -305,9 +322,9 @@ Summary cache default: `~/.repo_summarizer_cache/summaries.json`
 
 ## Troubleshooting
 
-### `ANTHROPIC_API_KEY` missing
+### Provider API key missing
 
-Set environment variable or pass `--api-key`.
+Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for the selected provider, or pass `--api-key`.
 
 ### GitHub clone failures
 

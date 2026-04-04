@@ -28,12 +28,39 @@ class _FakeClient:
         self.messages = _FakeMessagesAPI(responses)
 
 
+@dataclass
+class _FakeOpenAIResponse:
+    id: str
+    output: list
+    output_text: str
+    usage: object
+
+
+class _FakeResponsesAPI:
+    def __init__(self, responses: list[_FakeOpenAIResponse]):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._responses.pop(0)
+
+
+class _FakeOpenAIClient:
+    def __init__(self, responses: list[_FakeOpenAIResponse]):
+        self.responses = _FakeResponsesAPI(responses)
+
+
 def _tool_use_block(tool_id: str, name: str, payload: dict):
     return SimpleNamespace(type="tool_use", id=tool_id, name=name, input=payload)
 
 
 def _text_block(text: str):
     return SimpleNamespace(type="text", text=text)
+
+
+def _openai_function_call(call_id: str, name: str, arguments: str):
+    return SimpleNamespace(type="function_call", call_id=call_id, name=name, arguments=arguments)
 
 
 def _usage():
@@ -132,3 +159,48 @@ def test_l5_tool_executor_file_lookup_partial_match(tmp_path: Path):
     )
     assert payload["path"] == "src/main.py"
     assert payload["summary"] == "summary-main"
+
+
+def test_l5_tool_use_loop_returns_final_text_openai(tmp_path: Path):
+    responses = [
+        _FakeOpenAIResponse(
+            id="resp_1",
+            output=[_openai_function_call("call_1", "list_modules", "{}")],
+            output_text="",
+            usage=_usage(),
+        ),
+        _FakeOpenAIResponse(
+            id="resp_2",
+            output=[],
+            output_text="Final synthesized summary.",
+            usage=_usage(),
+        ),
+    ]
+    fake_client = _FakeOpenAIClient(responses)
+    summarizer = Summarizer(
+        api_key="test",
+        client=fake_client,
+        provider="openai",
+        cache_dir=tmp_path / "cache",
+        verbose=False,
+    )
+
+    result = asyncio.run(
+        summarizer.synthesize_final(
+            repo_name="repo",
+            repo_structure="repo/\n  src/",
+            module_summaries=[{"name": "src", "summary": "Source module summary"}],
+            languages=["python"],
+            file_count=2,
+            readme_excerpt=None,
+            manifest_excerpt=None,
+            doc_summaries=None,
+            file_summaries={"src/main.py": "Main file summary"},
+        )
+    )
+
+    assert result == "Final synthesized summary."
+    assert summarizer.tracker.api_calls == 2
+    assert fake_client.responses.calls[1]["previous_response_id"] == "resp_1"
+    assert fake_client.responses.calls[1]["input"][0]["type"] == "function_call_output"
+    assert fake_client.responses.calls[0]["text"]["verbosity"] == "medium"

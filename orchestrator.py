@@ -116,11 +116,16 @@ class RepoOrchestrator:
     def __init__(
         self,
         *,
+        provider: str = "anthropic",
         api_key: Optional[str] = None,
+        small_model: Optional[str] = None,
+        large_model: Optional[str] = None,
+        small_model_verbosity: Optional[str] = None,
+        large_model_verbosity: Optional[str] = None,
         cache_dir: Optional[Path] = None,
         max_concurrent: int = 20,
-        haiku_concurrency: Optional[int] = None,
-        sonnet_concurrency: Optional[int] = None,
+        small_model_concurrency: Optional[int] = None,
+        large_model_concurrency: Optional[int] = None,
         verbose: bool = True,
         exclude_dirs: Optional[set[str]] = None,
         max_files: int = 10000,
@@ -150,17 +155,22 @@ class RepoOrchestrator:
             cache_dir = Path.home() / ".repo_summarizer_cache"
         self.cache_dir = cache_dir
 
-        if haiku_concurrency is None:
-            haiku_concurrency = max_concurrent
-        if sonnet_concurrency is None:
-            sonnet_concurrency = max_concurrent
+        if small_model_concurrency is None:
+            small_model_concurrency = max_concurrent
+        if large_model_concurrency is None:
+            large_model_concurrency = max_concurrent
 
         self.summarizer = Summarizer(
+            provider=provider,
             api_key=api_key,
+            small_model=small_model,
+            large_model=large_model,
+            small_model_verbosity=small_model_verbosity,
+            large_model_verbosity=large_model_verbosity,
             cache_dir=cache_dir,
             max_concurrent=max_concurrent,
-            haiku_concurrency=haiku_concurrency,
-            sonnet_concurrency=sonnet_concurrency,
+            small_model_concurrency=small_model_concurrency,
+            large_model_concurrency=large_model_concurrency,
             l1_batch_size=l1_batch_size,
             l1_batch_threshold=l1_batch_threshold,
             verbose=verbose,
@@ -257,12 +267,29 @@ class RepoOrchestrator:
         # Rough token heuristics for a planning estimate only.
         est_in = int(total_units * 110 + l2_calls * 350 + l3_calls * 320 + l4_calls * 420 + l5_calls * 5000 + doc_files * 220)
         est_out = int(total_units * 75 + l2_calls * 120 + l3_calls * 90 + l4_calls * 120 + l5_calls * 1200 + doc_files * 60)
-        est_cost = (
-            est_in * 0.7 * 0.80 / 1_000_000
-            + est_out * 0.7 * 4.00 / 1_000_000
-            + est_in * 0.3 * 3.00 / 1_000_000
-            + est_out * 0.3 * 15.00 / 1_000_000
-        )
+        pricing_by_model = getattr(self.summarizer.tracker, "pricing_by_model", {})
+        small_model = getattr(self.summarizer, "small_model", "small")
+        large_model = getattr(self.summarizer, "large_model", "large")
+        small_pricing = pricing_by_model.get(small_model)
+        large_pricing = pricing_by_model.get(large_model)
+        est_cost: float | None = None
+        if small_pricing is not None and large_pricing is not None:
+            est_cost = (
+                est_in * 0.7 * small_pricing[0] / 1_000_000
+                + est_out * 0.7 * small_pricing[1] / 1_000_000
+                + est_in * 0.3 * large_pricing[0] / 1_000_000
+                + est_out * 0.3 * large_pricing[1] / 1_000_000
+            )
+            estimated_cost_line = f"- Estimated cost: ~${est_cost:.2f}\n"
+        else:
+            missing_models = [
+                model for model, pricing in ((small_model, small_pricing), (large_model, large_pricing))
+                if pricing is None
+            ]
+            estimated_cost_line = (
+                "- Estimated cost: unavailable "
+                f"(missing pricing for {', '.join(missing_models)})\n"
+            )
 
         report = (
             "## Dry Run Estimate\n\n"
@@ -273,7 +300,7 @@ class RepoOrchestrator:
             f"- Languages: {', '.join(languages)}\n"
             f"- Estimated calls: L1={l1_calls}, L2={l2_calls}, Docs={doc_files}, L3={l3_calls}, L4={l4_calls}, L5={l5_calls}\n"
             f"- Estimated tokens: in~{est_in:,}, out~{est_out:,}\n"
-            f"- Estimated cost: ~${est_cost:.2f}\n"
+            f"{estimated_cost_line}"
         )
         stats = {
             "dry_run": True,
@@ -294,7 +321,7 @@ class RepoOrchestrator:
             },
             "estimated_input_tokens": est_in,
             "estimated_output_tokens": est_out,
-            "estimated_cost_usd": round(est_cost, 2),
+            "estimated_cost_usd": round(est_cost, 2) if est_cost is not None else None,
             **vars(self.summarizer.tracker),
         }
         return report, stats
